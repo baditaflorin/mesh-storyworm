@@ -2,9 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createClockSync,
   useEventLog,
-  useFairRng,
-  useMeshSlot,
   useNamedPeer,
+  useRotatingTurn,
   type MeshConfig,
   type YRoom,
 } from "@baditaflorin/mesh-common";
@@ -35,27 +34,20 @@ export function Feature({ room, config }: Props) {
 }
 
 function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
-  const { name, setName, names, nameOf } = useNamedPeer(config, room);
+  const { name, setName, nameOf } = useNamedPeer(config, room);
   const log = useEventLog<Line>(room, "story");
-  const fairRng = useFairRng(room, "author-salts");
   const clock = useMemo(() => createClockSync(room.provider), [room]);
   useEffect(() => () => clock.destroy(), [clock]);
-  const slot = useMeshSlot(clock, SLOT_MS);
+  const turn = useRotatingTurn(room, clock, { slotMs: SLOT_MS, order: "shuffle" });
   const [draft, setDraft] = useState("");
 
-  const present = Object.keys(names)
-    .filter((k) => names[k])
-    .sort();
-  const order = fairRng.seed != null && present.length > 0 ? fairRng.shuffle(present) : present;
-  const currentAuthorId = order.length > 0 ? order[slot.slotId % order.length] : null;
-  const isMyTurn = currentAuthorId === room.peerId;
-  const alreadyWrote = log.events.some((l) => l.peerId === room.peerId && l.slotId === slot.slotId);
-  const authorName = currentAuthorId
-    ? (nameOf(currentAuthorId) ?? `peer-${currentAuthorId.slice(0, 6)}`)
+  const alreadyWrote = log.events.some((l) => l.peerId === room.peerId && l.slotId === turn.slotId);
+  const authorName = turn.currentPeerId
+    ? (nameOf(turn.currentPeerId) ?? `peer-${turn.currentPeerId.slice(0, 6)}`)
     : "…";
-  const sLeft = Math.ceil(slot.slotMsRemaining / 1000);
+  const sLeft = Math.ceil(turn.msToNextTurn / 1000);
   const trimmed = draft.trim();
-  const canSend = isMyTurn && trimmed.length > 0 && !alreadyWrote && name.trim().length > 0;
+  const canSend = turn.isMyTurn && trimmed.length > 0 && !alreadyWrote && name.trim().length > 0;
 
   const submit = () => {
     if (!canSend) return;
@@ -64,7 +56,7 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
       peerId: room.peerId,
       text: trimmed.slice(0, MAX_CHARS),
       ts: Date.now(),
-      slotId: slot.slotId,
+      slotId: turn.slotId,
     };
     log.push(line);
     setDraft("");
@@ -75,8 +67,8 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
       <header className="story-header">
         <h1>storyworm</h1>
         <p className="story-status">
-          one shared sentence every 30s · {present.length || 1}{" "}
-          {present.length === 1 ? "writer" : "writers"} · {log.size} lines
+          one shared sentence every 30s · {turn.order.length || 1}{" "}
+          {turn.order.length === 1 ? "writer" : "writers"} · {log.size} lines
         </p>
       </header>
 
@@ -89,14 +81,14 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
         aria-label="your name"
       />
 
-      <div className={`story-author-banner${isMyTurn ? " is-me" : ""}`} aria-live="polite">
-        {isMyTurn
+      <div className={`story-author-banner${turn.isMyTurn ? " is-me" : ""}`} aria-live="polite">
+        {turn.isMyTurn
           ? `your turn — write a sentence (${sLeft}s)`
           : `${authorName} is writing… ${sLeft}s`}
       </div>
 
       <div className="story-progress" aria-hidden="true">
-        <div className="story-progress-fill" style={{ opacity: 0.4 + slot.progress * 0.6 }} />
+        <div className="story-progress-fill" style={{ opacity: 0.4 + turn.progress * 0.6 }} />
       </div>
 
       <div className="story-compose">
@@ -107,9 +99,9 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
           onKeyDown={(e) => {
             if (e.key === "Enter" && canSend) submit();
           }}
-          placeholder={isMyTurn ? "add one sentence…" : "wait for your turn"}
+          placeholder={turn.isMyTurn ? "add one sentence…" : "wait for your turn"}
           maxLength={MAX_CHARS}
-          disabled={!isMyTurn}
+          disabled={!turn.isMyTurn}
           aria-label="your sentence"
         />
         <button
