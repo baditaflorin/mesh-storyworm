@@ -3,6 +3,7 @@ import {
   createClockSync,
   useEventLog,
   useNamedPeer,
+  useRoster,
   useRotatingTurn,
   type MeshConfig,
   type YRoom,
@@ -19,7 +20,20 @@ type Line = {
 };
 
 const MAX_CHARS = 120;
-const SLOT_MS = 30_000;
+const DEFAULT_SLOT_MS = 30_000;
+
+/**
+ * Authoring interval in ms. Defaults to 30 s (the advertised cadence) but is
+ * overridable via `?slot=<ms>` so a headless 2-peer test can observe several
+ * authorship rotations inside its time budget. Clamped to a ≥1 000 ms floor so
+ * a hostile/typo value can't busy-spin the slot clock.
+ */
+function slotMs(): number {
+  if (typeof window === "undefined") return DEFAULT_SLOT_MS;
+  const raw = new URLSearchParams(window.location.search).get("slot");
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n >= 1_000 ? n : DEFAULT_SLOT_MS;
+}
 
 export function Feature({ room, config }: Props) {
   if (!room) {
@@ -38,7 +52,21 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
   const log = useEventLog<Line>(room, "story");
   const clock = useMemo(() => createClockSync(room.provider), [room]);
   useEffect(() => () => clock.destroy(), [clock]);
-  const turn = useRotatingTurn(room, clock, { slotMs: SLOT_MS, order: "shuffle" });
+  const slot = useMemo(() => slotMs(), []);
+  // Reseed the shuffle once per full pass through the roster (not every slot).
+  // With the default reshuffleEvery:1 the per-slot reseed moves in lockstep
+  // with `slotId % n` for a small roster, so they cancel and ONE peer stays the
+  // author for a long sticky run (~10 slots) — contradicting "every 30s a new
+  // peer is the author". `present.length` comes from the shared, sorted roster
+  // CRDT, so every peer computes the same reshuffleEvery and still agrees on who
+  // is authoring right now.
+  const present = useRoster(room).present.length;
+  const reshuffleEvery = Math.max(2, present);
+  const turn = useRotatingTurn(room, clock, {
+    slotMs: slot,
+    order: "shuffle",
+    reshuffleEvery,
+  });
   const [draft, setDraft] = useState("");
 
   const alreadyWrote = log.events.some((l) => l.peerId === room.peerId && l.slotId === turn.slotId);
@@ -62,12 +90,19 @@ function Body({ room, config }: { room: YRoom; config: MeshConfig }) {
     setDraft("");
   };
 
+  const slotSeconds = Math.round(slot / 1000);
+
   return (
-    <div className="story-screen">
+    <div
+      className="story-screen"
+      data-author-peer={turn.currentPeerId ?? ""}
+      data-slot={turn.slotId}
+      data-slot-ms={slot}
+    >
       <header className="story-header">
         <h1>storyworm</h1>
         <p className="story-status">
-          one shared sentence every 30s · {turn.order.length || 1}{" "}
+          one shared sentence every {slotSeconds}s · {turn.order.length || 1}{" "}
           {turn.order.length === 1 ? "writer" : "writers"} · {log.size} lines
         </p>
       </header>

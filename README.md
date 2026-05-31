@@ -1,7 +1,7 @@
 # mesh-storyworm
 
 [![pages](https://img.shields.io/badge/live-baditaflorin.github.io%2Fmesh-storyworm-59c6a3)](https://baditaflorin.github.io/mesh-storyworm/)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](https://github.com/baditaflorin/mesh-storyworm/blob/main/package.json)
+[![version](https://img.shields.io/badge/version-0.1.1-blue)](https://github.com/baditaflorin/mesh-storyworm/blob/main/package.json)
 [![license](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 > Round-robin one-sentence story. Every 30 seconds a new peer is the author.
