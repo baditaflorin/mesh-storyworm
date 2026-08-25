@@ -1,4 +1,4 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { openTwoPeers } from "@baditaflorin/mesh-common/testing";
 import { readFileSync } from "node:fs";
 
@@ -12,7 +12,8 @@ test("current author's sentence syncs to other peer", async ({ browser, baseURL 
   try {
     await a.getByPlaceholder("your name").fill("alice");
     await b.getByPlaceholder("your name").fill("bob");
-    await a.waitForTimeout(900);
+    await expect(a.locator(".story-status")).toContainText("2 writers", { timeout: 15_000 });
+    await expect(b.locator(".story-status")).toContainText("2 writers", { timeout: 15_000 });
 
     const aIsMine =
       (await a.locator(".story-banner.is-me, .story-author-banner.is-me").count()) > 0;
@@ -27,33 +28,12 @@ test("current author's sentence syncs to other peer", async ({ browser, baseURL 
   }
 });
 
-/**
- * Open two peers at a URL carrying `?slot=<ms>` so authorship rotates fast
- * enough to observe headless. y-webrtc's BroadcastChannel fallback syncs them
- * with no signaling server.
- */
-async function openTwoPeersAt(
-  browser: Browser,
-  url: string,
-): Promise<{ a: Page; b: Page; cleanup: () => Promise<void> }> {
-  const roomId = `e2e-${Math.random().toString(36).slice(2, 8)}`;
-  const context = await browser.newContext({ baseURL: url || undefined });
-  await context.addInitScript(
-    ({ prefix, room }) => {
-      localStorage.setItem(`${prefix}:room`, room);
-      localStorage.setItem(`${prefix}:signalingUrl`, "ws://localhost:1/never-connects");
-      localStorage.removeItem(`${prefix}:iceServers`);
-    },
-    { prefix: storagePrefix, room: roomId },
-  );
-  const a = await context.newPage();
-  const b = await context.newPage();
-  await Promise.all([a.goto(url), b.goto(url)]);
-  return { a, b, cleanup: () => context.close() };
+async function authorSnapshot(p: Page): Promise<{ slot: string | null; author: string | null }> {
+  return p.locator(".story-screen").evaluate((screen) => ({
+    slot: screen.getAttribute("data-slot"),
+    author: screen.getAttribute("data-author-peer"),
+  }));
 }
-
-const authorPeer = (p: Page) => p.locator(".story-screen").getAttribute("data-author-peer");
-const currentSlot = (p: Page) => p.locator(".story-screen").getAttribute("data-slot");
 
 test("exactly one author per slot agreed on BOTH screens, sentence propagates both ways, and authorship ROTATES freshly", async ({
   browser,
@@ -63,11 +43,14 @@ test("exactly one author per slot agreed on BOTH screens, sentence propagates bo
   // 1s slots (the clamp floor) so ~16 slots fit inside the test budget. 16 slots
   // is wider than the old sticky run (one peer authored for ~10 consecutive
   // slots), so the transition count below cleanly separates buggy from fixed.
-  const { a, b, cleanup } = await openTwoPeersAt(browser, (baseURL ?? "") + "?slot=1000");
+  const { a, b, cleanup } = await openTwoPeers(browser, (baseURL ?? "") + "?slot=1000", {
+    storagePrefix,
+  });
   try {
     await a.getByPlaceholder("your name").fill("alice");
     await b.getByPlaceholder("your name").fill("bob");
-    await a.waitForTimeout(1_000); // names + roster gather
+    await expect(a.locator(".story-status")).toContainText("2 writers", { timeout: 15_000 });
+    await expect(b.locator(".story-status")).toContainText("2 writers", { timeout: 15_000 });
 
     // --- Sentence propagation: whoever is the author right now writes a line;
     // it must appear in the SHARED story on the OTHER screen. ---
@@ -90,12 +73,9 @@ test("exactly one author per slot agreed on BOTH screens, sentence propagates bo
     let lastSlot: string | null = null;
     const deadline = Date.now() + 30_000;
     while (authorBySlot.length < SLOTS && Date.now() < deadline) {
-      const [sa, fa, sb, fb] = await Promise.all([
-        currentSlot(a),
-        authorPeer(a),
-        currentSlot(b),
-        authorPeer(b),
-      ]);
+      const [aSnapshot, bSnapshot] = await Promise.all([authorSnapshot(a), authorSnapshot(b)]);
+      const { slot: sa, author: fa } = aSnapshot;
+      const { slot: sb, author: fb } = bSnapshot;
       // Load-bearing assertion #1: WHEN both screens are on the same slot
       // ordinal, they MUST show the SAME single author — the author is a pure
       // function of (mesh slot, roster, shuffle seed), all shared, so it can
